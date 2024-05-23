@@ -1,0 +1,219 @@
+from web3.auto import w3
+from eth_account.messages import encode_defunct
+import requests
+import json
+import pprint
+from eip712_structs import make_domain
+from eip712_structs import Address, Boolean, Bytes, String, Uint
+from eip712_structs import EIP712Struct
+import time
+from hexbytes import HexBytes
+
+
+network = "xdai"
+
+if(network == "mainnet"):
+    base_url = "https://protocol-mainnet.gnosis.io/api/v1/"
+    private_key = "XXXX"
+    public_address = "0xE2A4dFC3Cab6dCdb198C83066B93110D62d95F09"
+    domain = make_domain(name='Gnosis Protocol', version='v2', chainId='1', verifyingContract="0x9008D19f58AAbD9eD0D60971565AA8510560ab41")  # Make a Domain Separator
+else:
+    base_url = "https://protocol-xdai.gnosis.io/api/v1/"
+    private_key = "XXXX"
+    public_address = "0x89145F922BB420453bCd8a7Be87dA830C0941f22"
+    domain = make_domain(name='Gnosis Protocol', version='v2', chainId='100', verifyingContract="0x9008D19f58AAbD9eD0D60971565AA8510560ab41")  # Make a Domain Separator
+
+
+
+class Order(EIP712Struct):
+    sellToken = Address()
+    buyToken = Address()
+    receiver = Address()
+    sellAmount = Uint(256)
+    buyAmount = Uint(256)
+    validTo = Uint(32)
+    appData = Bytes(32)
+    feeAmount = Uint(256)
+    kind = String()
+    partiallyFillable = Boolean()
+    sellTokenBalance = String()
+    buyTokenBalance = String()
+
+
+def placeOrder(myorder):
+
+    myorder["feeAmount"] = getFee(myorder)
+
+    my_bytes = myorder.signable_bytes(domain)
+    hash = w3.keccak(my_bytes)
+    message = encode_defunct(primitive=hash)
+
+
+    signed_message = w3.eth.account.sign_message(message, private_key=private_key)
+    #print(signed_message)
+
+
+    json_str = '''{
+      "sellToken": "''' + str(myorder["sellToken"]) + '''",
+      "buyToken": "''' + str(myorder["buyToken"]) + '''",
+      "receiver": "''' + str(myorder["receiver"]) + '''",
+      "sellAmount": "''' + str(myorder["sellAmount"]) + '''",
+      "buyAmount": "''' + str(myorder["buyAmount"]) + '''",
+      "validTo": ''' + str(myorder["validTo"]) + ''',
+      "appData": "''' + str(myorder["appData"].hex()) + '''",
+      "feeAmount": "''' + str(myorder["feeAmount"]) + '''",
+      "kind": "''' + str(myorder["kind"]) + '''",
+      "partiallyFillable": ''' + str(myorder["partiallyFillable"]).lower() + ''',
+      "signature": "''' + str(signed_message.signature.hex()) + '''",
+      "signingScheme": "ethsign",
+      "sellTokenBalance": "''' + str(myorder["sellTokenBalance"]) +'''",
+      "buyTokenBalance": "''' + str(myorder["buyTokenBalance"]) +'''",
+      "from": "''' + public_address + '''"
+    }'''
+
+    print(json_str)
+    '''json_dict = {}
+    json_dict["sellToken"] = sellToken
+    json_dict["buyToken"] = buyToken
+    json_dict["receiver"] = receiver
+    json_dict["sellAmount"] = str(sellAmount)
+    json_dict["buyAmount"] = str(buyAmount)
+    json_dict["validTo"] = validTo
+    json_dict["appData"] = appData
+    json_dict["feeAmount"] = str(feeAmount)
+    json_dict["kind"] = kind
+    json_dict["partiallyFillable"] = str(partiallyFillable).lower()
+    json_dict["signature"] = str(signed_message.signature.hex())
+    json_dict["signingScheme"] = "ethsign"
+    json_dict["sellTokenBalance"] = str(sellTokenBalance)
+    json_dict["buyTokenBalance"] = str(buyTokenBalance)
+    json_dict["from"] = public_address'''
+
+    #print(json_str)
+    j = json.loads(json_str)
+
+    #pprint.pprint(j)
+
+    r = requests.post(base_url + "orders", json=j)
+
+    print("Status code: ", r.status_code)
+    print(r.json())
+
+
+
+
+def createCounterOrder(order):
+    return_order = Order()
+    return_order["sellToken"] = order["buyToken"]
+    if(return_order["sellToken"]=="0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"):
+        #TODO use WETH address for mainnet
+        return_order["sellToken"] = "0xe91d153e0b41518a2ce8dd3d7944fa863463a97d"
+    return_order["buyToken"] = order["sellToken"]
+    if(return_order["buyToken"]=="0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"):
+        return_order["buyToken"] = "0xe91d153e0b41518a2ce8dd3d7944fa863463a97d"
+    return_order["receiver"] = public_address
+    return_order["sellAmount"] = int(int(order["buyAmount"]))
+    return_order["buyAmount"] = int(int(order["sellAmount"]))
+    return_order["validTo"] = int(time.time()) + 120
+    return_order["appData"] = HexBytes("0x0000000000000000000000000000000000000000000000000000000000000ccc")
+    if (order["kind"] == "sell"):
+        return_order["kind"] = "buy"
+    else:
+        return_order["kind"] = "sell"
+
+    return_order["feeAmount"] = int(getFee(return_order))
+    return_order["partiallyFillable"] = False
+    return_order["sellTokenBalance"] = "erc20"
+    return_order["buyTokenBalance"] = "erc20"
+    return(return_order)
+
+
+def getFee(order):
+    if (order["kind"] == "sell"):
+        fee = requests.get(base_url +  "fee?sellToken=" + order["sellToken"] +  "&buyToken=" + order["buyToken"] + "&amount=" + str(order["sellAmount"]) + "&kind=" + order["kind"])
+    elif (order["kind"] == "buy"):
+        fee = requests.get(base_url +  "fee?sellToken=" + order["sellToken"] +  "&buyToken=" + order["buyToken"] + "&amount=" + str(order["buyAmount"]) + "&kind=" + order["kind"])
+    else:
+        print("Unknown order type")
+        return
+    print(fee.json())
+    if ("amount" in fee.json().keys()):
+        return int(fee.json()["amount"])
+    else:
+        return 0
+
+stablecoins = {}
+#USDC
+stablecoins["0xddafbb505ad214d7b80b1f830fccc89b60fb7a83"] = 6
+#wxDAI
+stablecoins["0xe91d153e0b41518a2ce8dd3d7944fa863463a97d"] = 18
+#USDT
+stablecoins["0x4ecaba5870353805a9f068101a40e0f32ed605c6"] = 6
+
+while(True):
+
+    query = "solvable_orders"
+    first_response = requests.get(base_url+query)
+    print("Status code: ", first_response.status_code)
+    response_list=first_response.json()
+
+    '''response_list = [{'appData': '0x0000000000000000000000000000000000000000000000000000000000000001',
+ 'availableBalance': '74440826130096183546',
+ 'buyAmount': '5000000000000000000',
+ 'buyToken': '0xc60e38c6352875c051b481cbe79dd0383adb7817',
+ 'buyTokenBalance': 'erc20',
+ 'creationDate': '2021-08-30T07:10:46.887306Z',
+ 'executedBuyAmount': '0',
+ 'executedFeeAmount': '0',
+ 'executedSellAmount': '0',
+ 'executedSellAmountBeforeFees': '0',
+ 'feeAmount': '200000247000000',
+ 'invalidated': False,
+ 'kind': 'buy',
+ 'owner': '0x2aec96b1b11be4a6c00bea6f41110b1938eb0768',
+ 'partiallyFillable': False,
+ 'receiver': '0x2aec96b1b11be4a6c00bea6f41110b1938eb0768',
+ 'sellAmount': '4353224499094049015',
+ 'sellToken': '0xe91d153e0b41518a2ce8dd3d7944fa863463a97d',
+ 'sellTokenBalance': 'erc20',
+ 'settlementContract': '0x9008d19f58aabd9ed0d60971565aa8510560ab41',
+ 'signature': '0x78419a25bdcc55050066818a3238e07ccff092a4ea7a90af500b748915a6a7574c89b38fdbe9aa048ada563812936ffb4f26ae6a9407f9418f14f17e4b9dc93f1c',
+ 'signingScheme': 'eip712',
+ 'status': 'open',
+ 'uid': '0xfc869e13f2983aab442744c40037674a3f1cbe458d22f0d4fbf41be72cc77dd82aec96b1b11be4a6c00bea6f41110b1938eb0768612c8b7b',
+ 'validTo': 1630309243}]'''
+
+
+    for i in range((len(response_list))):
+        if(response_list[i]["owner"].lower() != public_address.lower()):
+            print(response_list[i]["owner"].lower())
+            print(public_address.lower())
+            pprint.pprint(response_list[i])
+            counter_order = createCounterOrder(response_list[i])
+            if(counter_order["sellToken"] in stablecoins.keys()) or \
+                counter_order["buyToken"] in stablecoins.keys():
+                print("hurray")
+                pprint.pprint(counter_order["buyToken"])
+                pprint.pprint(counter_order["sellToken"])
+                print("test123")
+
+
+                if(counter_order["kind"] == "buy" and counter_order["buyToken"] in stablecoins.keys() or (not counter_order["sellToken"] in stablecoins.keys() and counter_order["buyToken"] in stablecoins.keys())):
+                    for j in stablecoins.keys():
+                        if (j == counter_order["buyToken"]):
+                            continue
+                        counter_order["sellToken"] = j
+                        counter_order["sellAmount"] = int(counter_order["buyAmount"] / 10** stablecoins[counter_order["buyToken"]] * 10** stablecoins[counter_order["sellToken"]] * 0.9996)
+                        print(counter_order["buyAmount"] / 10** stablecoins[counter_order["buyToken"]])
+                        print(counter_order["sellAmount"] / 10** stablecoins[counter_order["sellToken"]])
+                        placeOrder(counter_order)
+                else:
+                    for j in stablecoins.keys():
+                        if (j == counter_order["sellToken"]):
+                            continue
+                        counter_order["buyToken"] = j
+                        counter_order["buyAmount"] = int(counter_order["sellAmount"] / 10** stablecoins[counter_order["sellToken"]] * 10** stablecoins[counter_order["buyToken"]] * 1.0004)
+                        print(counter_order["buyAmount"] / 10** stablecoins[counter_order["buyToken"]])
+                        print(counter_order["sellAmount"] / 10** stablecoins[counter_order["sellToken"]])
+                        placeOrder(counter_order)
+    time.sleep(10)
